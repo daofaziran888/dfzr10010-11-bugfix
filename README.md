@@ -73,5 +73,53 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 可追溯字段清单
+
+元数据服务与湖仓血缘共用同一份「可追溯字段清单」，规则落在
+`backend/app/services/field_registry.py`（字段版本仓库）、
+`backend/app/services/field_audit.py`（字段审计台账）和
+`backend/app/services/lineage.py`（血缘引用）。
+
+- **一个当前版本**：每张元数据表任意时刻只有一个 `当前` 字段版本；刷新会生成新版本，
+  旧版本降为 `历史` 并保留，不会删除或覆盖。
+- **刷新不丢依据**：刷新结果与当前版本一致时不生成重复版本；并发刷新只在
+  `store.lock` 内切换版本，同一幂等键复用同一版本，携带过期基线会被拒绝并提示
+  基于当前版本重试。
+- **注销保留清单**：注销把当前版本标记为已注销并保留为「最后有效字段清单」，
+  注销后禁止刷新和切换版本，血缘仍可回查注销前任意历史版本。
+- **血缘引用两步走**：先在字段审计台账声明「可追溯字段清单」兼容目标，声明成功
+  后才读取字段清单，并把字段版本、字段快照、字段指纹与注销状态固化到血缘记录；
+  引用失败只登记未完成项，血缘继续使用上一稳定口径，`重试引用` 只重试未完成项。
+- **台账对齐**：元数据侧在登记、注册、刷新、注销、切换版本后写台账；血缘侧在
+  声明并引用后写台账。`/api/metadata/audit/consistency/{id}` 用字段指纹比对两侧结果。
+
+示例数据中的 `lake.orders` 有两个字段版本：当前版本 `META-20261115-04`，
+历史版本 `META-20261115-03`（`order_id`、`dt`、`amount`、`customer_id`）继续供
+血缘记录引用。
+
+### 相关接口
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/metadata` | 列表，返回当前字段版本与字段清单摘要 |
+| `GET /api/metadata/{id}?version=` | 明细，可按字段版本回查历史清单 |
+| `GET /api/metadata/{id}/versions` | 字段版本清单（当前 + 历史） |
+| `GET /api/metadata/{id}/audit` | 单表字段审计台账与一致性结论 |
+| `GET /api/metadata/audit?entry_id=&version=&source=&result=` | 字段审计台账查询 |
+| `GET /api/metadata/audit/consistency/{id}?version=` | 元数据与血缘口径比对 |
+| `POST /api/metadata/{id}/actions` | `注册表`、`刷新元数据`、`注销表`、`切换字段版本` |
+| `GET /api/lineage/{id}?version=` | 血缘明细，可回查引用的字段版本与注销前最后有效清单 |
+| `POST /api/lineage/{id}/actions` | `关联血缘`、`标记过期`、`清理记录`、`重试引用` |
+
+动作接口的请求体统一为 `{ "values": { "action": "...", ... } }`；刷新可带
+`字段列表`（或 `字段清单`）、`基线版本`、`request_id` 以保证并发幂等。
+
+### 验证
+
+```bash
+cd backend
+python -m unittest discover -s tests -v
+```
+
 领域：数据工程
 子方向：数仓与数据湖

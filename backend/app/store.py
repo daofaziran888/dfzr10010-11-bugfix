@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import copy
+import threading
 from typing import Any
 
 from app.seed import SEED_ROWS
@@ -11,9 +13,13 @@ from app.seed import SEED_ROWS
 
 class Store:
     def __init__(self) -> None:
+        # 内存仓库会被多个请求线程同时读写；版本切换、注销与台账同步需要同一把锁。
+        self.lock = threading.RLock()
         self._tables: dict[str, list[dict[str, Any]]] = {
-            name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
+            name: copy.deepcopy(rows) for name, rows in SEED_ROWS.items()
         }
+        # 辅助台账不进入业务模块概览，但和业务数据共用同一把锁。
+        self.aux: dict[str, Any] = {}
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
